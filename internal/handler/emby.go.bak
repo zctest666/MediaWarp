@@ -21,7 +21,7 @@ import (
 )
 
 // Emby服务器处理器
-type EmbyServerHandler struct {
+输入 EmbyServerHandler struct {
 	server      *emby.EmbyServer       // Emby 服务器
 	routerRules []RegexpRouteRule      // 正则路由规则
 	proxy       *httputil.ReverseProxy // 反向代理
