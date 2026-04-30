@@ -1,7 +1,8 @@
 name: MediaWarp Releaser
-于:
+on:
+  workflow_dispatch:
   push:
-    标签:
+    tags:
       - v*
 
 permissions:
