@@ -212,78 +212,77 @@ func (embyServerHandler *EmbyServerHandler) VideosHandler(ctx *gin.Context) {
 		return
 	}
 
-	// EmbyServer <= 4.8 ====> mediaSourceID = 343121
-	// EmbyServer >= 4.9 ====> mediaSourceID = mediasource_31
-
+	// 1. 获取原始 ID
 	mediaSourceID := ctx.Query("mediasourceid")
 
-	// 新增逻辑：如果 URL 参数里没带 ID，尝试从路径中截取（针对 Skybox）
+	// 【兼容 Skybox】：如果参数为空，从路径中截取 ID
 	if mediaSourceID == "" {
 		pathParts := strings.Split(ctx.Request.URL.Path, "/")
-		// 路径格式通常为 /emby/Videos/374596/original.mp4
-		// 拆分后 ID 通常在第 4 个位置 (index 为 3)
 		for i, part := range pathParts {
-			if (part == "Videos" || part == "videos") && len(pathParts) > i+1 {
+			if (strings.EqualFold(part, "Videos")) && len(pathParts) > i+1 {
 				mediaSourceID = pathParts[i+1]
-				logging.Infof("【兼容模式】从路径解析到 MediaID: %s", mediaSourceID)
+				logging.Infof("【兼容模式】从路径解析到 ID: %s", mediaSourceID)
 				break
 			}
 		}
 	}
 
-	logging.Debugf("请求 ItemsServiceQueryItem：%s", mediaSourceID)
-	itemResponse, err := embyServerHandler.server.ItemsServiceQueryItem(strings.Replace(mediaSourceID, "mediasource_", "", 1), 1, "Path,MediaSources")
+	// 2. 统一转换为不带前缀的纯数字 ID
+	pureID := strings.Replace(mediaSourceID, "mediasource_", "", 1)
+
+	logging.Debugf("请求 ItemsServiceQueryItem，纯 ID 为：%s", pureID)
+	itemResponse, err := embyServerHandler.server.ItemsServiceQueryItem(pureID, 1, "Path,MediaSources")
 	if err != nil {
 		logging.Warning("请求 ItemsServiceQueryItem 失败：", err)
 		embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
 		return
 	}
-	
-	// 安全检查 1：确保 Emby 返回了至少一个条目
+
+	// 安全检查：结果集不能为空
 	if itemResponse == nil || len(itemResponse.Items) == 0 {
-		logging.Warning("Emby 未返回任何媒体条目信息，转为原始代理模式")
-		embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
-		return
-	}
-	
-	item := itemResponse.Items[0]
-	
-	// 安全检查 2：确保 Path 指针不为空
-	if item.Path == nil {
-		logging.Warning("该条目没有有效的路径信息 (Path is nil)，跳过处理")
+		logging.Warning("Emby 未返回任何媒体条目信息")
 		embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
 		return
 	}
 
-// 此时再安全地调用 strings.ToLower(*item.Path)
-if !strings.HasSuffix(strings.ToLower(*item.Path), ".strm") {
-    logging.Debug("播放本地视频：" + *item.Path + "，不进行处理")
-    embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
-    return
-}
+	item := itemResponse.Items[0]
+
+	// 安全检查：路径不能为空
+	if item.Path == nil {
+		logging.Warning("条目路径 (Path) 为空，跳过处理")
+		embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
+
+	if !strings.HasSuffix(strings.ToLower(*item.Path), ".strm") { // 不是 Strm 文件
+		logging.Debug("播放本地视频：" + *item.Path + "，不进行处理")
+		embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
+		return
+	}
 
 	strmFileType, opt := recgonizeStrmFileType(*item.Path)
 	for _, mediasource := range item.MediaSources {
-		if *mediasource.ID == mediaSourceID { // EmbyServer >= 4.9 返回的ID带有前缀mediasource_
+		// 【关键修复点】：比对时将双方的 ID 都去掉前缀，确保 Skybox 请求能匹配成功
+		currentSourcePureID := strings.Replace(*mediasource.ID, "mediasource_", "", 1)
+		
+		if currentSourcePureID == pureID { 
 			switch strmFileType {
 			case constants.HTTPStrm:
 				if *mediasource.Protocol == emby.HTTP {
 					redirectURL := *mediasource.Path
 					if config.HTTPStrm.FinalURL {
-						logging.Debug("HTTPStrm 启用获取最终 URL，开始尝试获取最终 URL")
+						logging.Debug("HTTPStrm 启用获取最终 URL")
 						if finalURL, err := getFinalURL(redirectURL, ctx.Request.UserAgent()); err != nil {
-							logging.Warning("获取最终 URL 失败，使用原始 URL：", err)
+							logging.Warning("获取最终 URL 失败：", err)
 						} else {
 							redirectURL = finalURL
 						}
-					} else {
-						logging.Debug("HTTPStrm 未启用获取最终 URL，直接使用原始 URL")
 					}
 					logging.Info("HTTPStrm 重定向至：", redirectURL)
 					ctx.Redirect(http.StatusFound, redirectURL)
 				}
 				return
-			case constants.AlistStrm: // 无需判断 *mediasource.Container 是否以Strm结尾，当 AlistStrm 存储的位置有对应的文件时，*mediasource.Container 会被设置为文件后缀
+			case constants.AlistStrm:
 				alistServerAddr := opt.(string)
 				alistServer, err := service.GetAlistServer(alistServerAddr)
 				if err != nil {
@@ -313,6 +312,8 @@ if !strings.HasSuffix(strings.ToLower(*item.Path), ".strm") {
 			}
 		}
 	}
+    // 如果循环结束仍未匹配成功，则执行原始代理
+    embyServerHandler.ReverseProxy(ctx.Writer, ctx.Request)
 }
 
 // 修改字幕
