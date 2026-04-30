@@ -214,7 +214,22 @@ func (embyServerHandler *EmbyServerHandler) VideosHandler(ctx *gin.Context) {
 
 	// EmbyServer <= 4.8 ====> mediaSourceID = 343121
 	// EmbyServer >= 4.9 ====> mediaSourceID = mediasource_31
+
 	mediaSourceID := ctx.Query("mediasourceid")
+
+	// 新增逻辑：如果 URL 参数里没带 ID，尝试从路径中截取（针对 Skybox）
+	if mediaSourceID == "" {
+		pathParts := strings.Split(ctx.Request.URL.Path, "/")
+		// 路径格式通常为 /emby/Videos/374596/original.mp4
+		// 拆分后 ID 通常在第 4 个位置 (index 为 3)
+		for i, part := range pathParts {
+			if (part == "Videos" || part == "videos") && len(pathParts) > i+1 {
+				mediaSourceID = pathParts[i+1]
+				logging.Infof("【兼容模式】从路径解析到 MediaID: %s", mediaSourceID)
+				break
+			}
+		}
+	}
 
 	logging.Debugf("请求 ItemsServiceQueryItem：%s", mediaSourceID)
 	itemResponse, err := embyServerHandler.server.ItemsServiceQueryItem(strings.Replace(mediaSourceID, "mediasource_", "", 1), 1, "Path,MediaSources")
@@ -232,8 +247,6 @@ func (embyServerHandler *EmbyServerHandler) VideosHandler(ctx *gin.Context) {
 	}
 	
 	item := itemResponse.Items[0]
-	itemJson, _ := json.Marshal(item)
-	logging.Debugf("【调试】Emby 返回的完整 Item 数据: %s", string(itemJson))
 	
 	// 安全检查 2：确保 Path 指针不为空
 	if item.Path == nil {
