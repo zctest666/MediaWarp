@@ -1,6 +1,5 @@
 name: MediaWarp Releaser
 于:
-  workflow_dispatch:
   push:
     标签:
       - v*
